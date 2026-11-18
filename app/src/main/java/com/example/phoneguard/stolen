@@ -1,0 +1,13 @@
+package com.example.phoneguard
+
+import android.content.Context
+import com.google.firebase.messaging.FirebaseMessaging
+import com.google.firebase.messaging.FirebaseMessagingService
+import com.google.firebase.messaging.RemoteMessage
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
+
+/** Receives push commands from the backend and drives the existing StolenMode. */
+class GuardMessagingService : FirebaseMessagingService() {
