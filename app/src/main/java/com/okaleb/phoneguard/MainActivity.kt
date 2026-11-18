@@ -37,6 +37,23 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_PHONE
             setText(prefs.getString("phone", "") ?: "")
         }
+        val emails = EditText(this).apply {
+            hint = "Emails to alert (separate with commas)"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setText(prefs.getString("emails", "johnikorat89@gmail.com, johnikorat@gmail.com, profiko.buk9@gmail.com, johnikorat9@gmail.com") ?: "")
+        }
+        val gmail = EditText(this).apply {
+            hint = "Sender Gmail address"
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            setText(prefs.getString("gmail", "") ?: "")
+        }
+        val gpass = EditText(this).apply {
+            hint = "Gmail app password (16 letters)"
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(prefs.getString("gpass", "") ?: "")
+        }
 
         fun add(label: String, action: () -> Unit) {
             box.addView(Button(this).apply {
@@ -61,6 +78,45 @@ class MainActivity : Activity() {
                 prefs.edit().putString("phone", num).apply()
                 status.text = "Trusted number saved"
             } else status.text = "Number too short"
+        }
+
+        box.addView(emails)
+        box.addView(gmail)
+        box.addView(gpass)
+        add("Save Email Settings") {
+            prefs.edit()
+                .putString("emails", emails.text.toString().trim())
+                .putString("gmail", gmail.text.toString().trim())
+                .putString("gpass", gpass.text.toString().replace(" ", ""))
+                .apply()
+            status.text = "Email settings saved"
+        }
+
+        add("Send Test Email") {
+            val to = emails.text.toString()
+                .split(",", ";", " ")
+                .map { it.trim() }
+                .filter { it.contains("@") }
+            val u = gmail.text.toString().trim()
+            val p = gpass.text.toString().replace(" ", "")
+            if (to.isEmpty() || u.isEmpty() || p.isEmpty()) {
+                status.text = "Fill in emails, Gmail and app password first"
+            } else {
+                status.text = "Sending test email..."
+                Locator.get(this) { loc ->
+                    val body = if (loc != null)
+                        "PHONE GUARD test. Location: " + Locator.link(loc)
+                    else
+                        "PHONE GUARD test. Location not available."
+                    Thread {
+                        val ok = Mailer.send(u, p, to, "PHONE GUARD TEST", body)
+                        runOnUiThread {
+                            status.text = if (ok) "Test email sent"
+                            else "Email failed. Check Gmail, app password and internet."
+                        }
+                    }.start()
+                }
+            }
         }
 
         add("Show My Location") {
@@ -94,6 +150,7 @@ class MainActivity : Activity() {
                 status.text = "Alarm stopped"
             } else status.text = "Wrong PIN"
         }
-        setContentView(box)
+
+        setContentView(ScrollView(this).apply { addView(box) })
     }
 }
