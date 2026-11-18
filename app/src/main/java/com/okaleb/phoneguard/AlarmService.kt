@@ -36,10 +36,10 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
         }
     }
 
-    private val smsLoop = object : Runnable {
+    private val alertLoop = object : Runnable {
         override fun run() {
             if (!ringing) return
-            sendLocationSms()
+            sendAlerts()
             handler.postDelayed(this, 120000)
         }
     }
@@ -49,20 +49,36 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
         if (Build.VERSION.SDK_INT >= 31) getSystemService(SmsManager::class.java)
         else SmsManager.getDefault()
 
-    private fun sendLocationSms() {
-        val num = getSharedPreferences("guard", MODE_PRIVATE).getString("phone", null)
-        if (num.isNullOrBlank()) return
-        if (checkSelfPermission(Manifest.permission.SEND_SMS) !=
-            PackageManager.PERMISSION_GRANTED) return
+    private fun sendAlerts() {
+        val p = getSharedPreferences("guard", MODE_PRIVATE)
+        val num = p.getString("phone", "") ?: ""
+        val gUser = p.getString("gmail", "") ?: ""
+        val gPass = p.getString("gpass", "") ?: ""
+        val emails = (p.getString("emails", "") ?: "")
+            .split(",", ";", " ")
+            .map { it.trim() }
+            .filter { it.contains("@") }
+        val canSms = num.isNotBlank() &&
+            checkSelfPermission(Manifest.permission.SEND_SMS) ==
+            PackageManager.PERMISSION_GRANTED
+        val canMail = emails.isNotEmpty() && gUser.isNotBlank() && gPass.isNotBlank()
+        if (!canSms && !canMail) return
         Locator.get(this) { loc ->
             if (!ringing) return@get
             val text = if (loc != null)
                 "PHONE GUARD: My phone was moved. Location: " + Locator.link(loc)
             else
                 "PHONE GUARD: My phone was moved. Location not available yet."
-            try {
-                smsManager().sendTextMessage(num, null, text, null, null)
-            } catch (e: Exception) {
+            if (canSms) {
+                try {
+                    smsManager().sendTextMessage(num, null, text, null, null)
+                } catch (e: Exception) {
+                }
+            }
+            if (canMail) {
+                Thread {
+                    Mailer.send(gUser, gPass, emails, "PHONE GUARD ALERT", text)
+                }.start()
             }
         }
     }
@@ -192,7 +208,7 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
                 am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
             startSiren()
             handler.postDelayed(loop, 5600)
-            handler.post(smsLoop)
+            handler.post(alertLoop)
         }
     }
 
