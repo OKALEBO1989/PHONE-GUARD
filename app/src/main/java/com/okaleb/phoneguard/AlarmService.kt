@@ -8,37 +8,120 @@ import android.media.*
 import android.os.*
 import android.speech.tts.TextToSpeech
 import androidx.core.app.ServiceCompat
+import java.util.Locale
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.tanh
 
 class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener {
     private lateinit var sm: SensorManager
     private var tts: TextToSpeech? = null
-    private var tone: ToneGenerator? = null
     private val handler = Handler(Looper.getMainLooper())
-    private var ringing = false
+    @Volatile private var ringing = false
     private var armedAt = 0L
+    private val rate = 22050
 
     private val loop = object : Runnable {
         override fun run() {
             if (!ringing) return
-            tone?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 2000)
-            tts?.speak("THIS PERSON IS A THIEF. OONO MUBBI!",
+            tts?.speak("This phone is stolen from the owner!",
                 TextToSpeech.QUEUE_FLUSH, null, "alarm")
-            handler.postDelayed(this, 5000)
+            handler.postDelayed(this, 9000)
         }
+    }
+
+    private fun addHit(mix: FloatArray, start: Int, type: Int, rnd: java.util.Random) {
+        if (type == 0) return
+        val len = (rate * 0.3).toInt()
+        var phase = 0.0
+        for (n in 0 until len) {
+            val idx = start + n
+            if (idx >= mix.size) break
+            val t = n.toDouble() / rate
+            val v = when (type) {
+                1 -> {
+                    val f = 60.0 + 110.0 * exp(-t * 18.0)
+                    phase += 2 * PI * f / rate
+                    sin(phase) * exp(-t * 9.0)
+                }
+                2 -> {
+                    val f = 200.0 + 120.0 * exp(-t * 25.0)
+                    phase += 2 * PI * f / rate
+                    sin(phase) * exp(-t * 14.0)
+                }
+                else -> (rnd.nextDouble() * 2 - 1) * exp(-t * 35.0) * 0.8
+            }
+            mix[idx] += v.toFloat()
+        }
+    }
+
+    private fun buildPeriod(): ShortArray {
+        val step = (rate * 0.15).toInt()
+        val pattern = intArrayOf(1, 0, 3, 2, 0, 3, 1, 0, 3, 2, 3, 3)
+        val total = rate * 9
+        val mix = FloatArray(total)
+        val rnd = java.util.Random(7)
+        val cycle = step * pattern.size
+        var start = 0
+        while (start < cycle * 3) {
+            for (i in pattern.indices) {
+                addHit(mix, start + i * step, pattern[i], rnd)
+            }
+            start += cycle
+        }
+        return ShortArray(total) { (tanh(mix[it] * 2.5) * 30000).toInt().toShort() }
+    }
+
+    private fun startSiren() {
+        val minBuf = AudioTrack.getMinBufferSize(
+            rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build())
+            .setAudioFormat(AudioFormat.Builder()
+                .setSampleRate(rate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .build())
+            .setBufferSizeInBytes(maxOf(minBuf, rate))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        Thread {
+            val period = buildPeriod()
+            track.play()
+            while (ringing) {
+                var pos = 0
+                while (pos < period.size && ringing) {
+                    val n = minOf(2205, period.size - pos)
+                    track.write(period, pos, n)
+                    pos += n
+                }
+            }
+            track.stop()
+            track.release()
+        }.start()
     }
 
     override fun onCreate() {
         super.onCreate()
         sm = getSystemService(SENSOR_SERVICE) as SensorManager
         tts = TextToSpeech(this, this)
-        tone = ToneGenerator(AudioManager.STREAM_ALARM, 100)
     }
 
     override fun onInit(status: Int) {
-        tts?.setAudioAttributes(
+        val t = tts ?: return
+        t.setAudioAttributes(
             AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build())
+        val r = t.setLanguage(Locale("en", "NG"))
+        if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+            t.setLanguage(Locale.ENGLISH)
+        }
+        t.setSpeechRate(0.9f)
     }
 
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
@@ -70,7 +153,8 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
             val am = getSystemService(AudioManager::class.java)
             am.setStreamVolume(AudioManager.STREAM_ALARM,
                 am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
-            handler.post(loop)
+            startSiren()
+            handler.postDelayed(loop, 5600)
         }
     }
 
@@ -80,14 +164,12 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
         ringing = false
         handler.removeCallbacksAndMessages(null)
         tts?.stop()
-        tone?.stopTone()
         sm.unregisterListener(this)
     }
 
     override fun onDestroy() {
         stopAlarm()
         tts?.shutdown()
-        tone?.release()
         super.onDestroy()
     }
 
