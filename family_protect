@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhoneGuard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; }
+  header { padding: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: #14213d; color: #fff; }
+  input, button { padding: 8px 10px; border-radius: 6px; border: 0; font-size: 14px; }
+  button { cursor: pointer; }
+  .danger { background: #d62828; color: #fff; }
+  .ok { background: #2a9d8f; color: #fff; }
+  #map { height: 55vh; }
+  #status { padding: 8px 10px; font-weight: 600; }
