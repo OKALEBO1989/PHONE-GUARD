@@ -1,0 +1,204 @@
+package com.example.phoneguard
+
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.app.admin.DeviceAdminReceiver
+import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.graphics.ImageFormat
+import android.hardware.camera2.*
+import android.media.ImageReader
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.IBinder
+import android.telephony.SubscriptionManager
+import android.util.Base64
+import androidx.core.app.NotificationCompat
+import org.json.JSONObject
+
+private const val KEY_FAILS = "failed_attempts"
+private const val KEY_SIM_SIG = "sim_signature"
+private const val FAILS_BEFORE_PHOTO = 2
+
+/** Detects wrong unlock attempts (needs device-admin "watch login" policy). */
+class GuardAdminReceiver : DeviceAdminReceiver() {
+
+    override fun onPasswordFailed(context: Context, intent: Intent) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val fails = prefs.getInt(KEY_FAILS, 0) + 1
+        prefs.edit().putInt(KEY_FAILS, fails).apply()
+        Uploader.sendEvent(context, "wrong_pin_attempt")
+        if (fails >= FAILS_BEFORE_PHOTO &&
+            context.checkSelfPermission(android.Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                context.startForegroundService(Intent(context, IntruderCameraService::class.java))
+            } catch (_: Exception) { /* OS blocked background start */ }
+        }
+    }
+
+    override fun onPasswordSucceeded(context: Context, intent: Intent) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_FAILS, 0).apply()
+    }
+}
+
+/** Helper to ask the user to enable device admin. Call from MainActivity. */
+object IntruderGuard {
+    fun isAdminActive(ctx: Context): Boolean {
+        val dpm = ctx.getSystemService(DevicePolicyManager::class.java)
+        return dpm.isAdminActive(ComponentName(ctx, GuardAdminReceiver::class.java))
+    }
+
+    fun requestAdmin(activity: Activity) {
+        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+            putExtra(
+                DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+                ComponentName(activity, GuardAdminReceiver::class.java)
+            )
+            putExtra(
+                DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                "PhoneGuard uses this to detect wrong unlock attempts and photograph intruders."
+            )
+        }
+        activity.startActivity(intent)
+    }
+}
+
+/** Takes one silent front-camera photo and uploads it. */
+class IntruderCameraService : Service() {
+
+    private var camera: CameraDevice? = null
+    private var reader: ImageReader? = null
+    private var thread: HandlerThread? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(2, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        capture()
+        return START_NOT_STICKY
+    }
+
+    private fun buildNotification(): Notification {
+        val channelId = "guard"
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(channelId, "PhoneGuard", NotificationManager.IMPORTANCE_LOW)
+        )
+        return NotificationCompat.Builder(this, channelId)
+            .setContentTitle("PhoneGuard active")
+            .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+            .build()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun capture() {
+        val cm = getSystemService(CameraManager::class.java)
+        val id = cm.cameraIdList.firstOrNull {
+            cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) ==
+                CameraCharacteristics.LENS_FACING_FRONT
+        } ?: return finish()
+
+        thread = HandlerThread("intruder-cam").also { it.start() }
+        val handler = Handler(thread!!.looper)
+
+        reader = ImageReader.newInstance(640, 480, ImageFormat.JPEG, 1).also { r ->
+            r.setOnImageAvailableListener({
+                val image = it.acquireLatestImage() ?: return@setOnImageAvailableListener
+                val buf = image.planes[0].buffer
+                val bytes = ByteArray(buf.remaining()).also { b -> buf.get(b) }
+                image.close()
+                Uploader.post(
+                    this,
+                    JSONObject()
+                        .put("type", "intruder_photo")
+                        .put("photo", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                        .put("time", System.currentTimeMillis())
+                )
+                finish()
+            }, handler)
+        }
+
+        try {
+            cm.openCamera(id, object : CameraDevice.StateCallback() {
+                override fun onOpened(cam: CameraDevice) {
+                    camera = cam
+                    @Suppress("DEPRECATION")
+                    cam.createCaptureSession(
+                        listOf(reader!!.surface),
+                        object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(session: CameraCaptureSession) {
+                                // Short delay lets auto-exposure settle so the photo isn't black
+                                handler.postDelayed({
+                                    try {
+                                        val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+                                            .apply {
+                                                addTarget(reader!!.surface)
+                                                set(CaptureRequest.JPEG_ORIENTATION, 270)
+                                            }.build()
+                                        session.capture(req, null, handler)
+                                    } catch (_: Exception) { finish() }
+                                }, 800)
+                            }
+                            override fun onConfigureFailed(session: CameraCaptureSession) = finish()
+                        },
+                        handler
+                    )
+                }
+                override fun onDisconnected(cam: CameraDevice) = finish()
+                override fun onError(cam: CameraDevice, error: Int) = finish()
+            }, handler)
+        } catch (_: Exception) { finish() }
+    }
+
+    private fun finish() {
+        try { camera?.close() } catch (_: Exception) {}
+        reader?.close()
+        thread?.quitSafely()
+        stopSelf()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
+
+/** Reports when the SIM card changes or is removed. */
+object SimGuard {
+    @SuppressLint("MissingPermission")
+    fun check(ctx: Context) {
+        if (ctx.checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        val sm = ctx.getSystemService(SubscriptionManager::class.java)
+        val now = (sm.activeSubscriptionInfoList ?: emptyList())
+            .map { "${it.subscriptionId}:${it.carrierName}" }
+            .sorted().joinToString("|")
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_SIM_SIG, null)
+        if (saved == null) {                      // first run: remember the owner's SIM
+            prefs.edit().putString(KEY_SIM_SIG, now).apply()
+            return
+        }
+        if (saved != now) {
+            Uploader.post(
+                ctx,
+                JSONObject()
+                    .put("type", "sim_changed")
+                    .put("detail", if (now.isEmpty()) "SIM removed" else now)
+                    .put("time", System.currentTimeMillis())
+            )
+            prefs.edit().putString(KEY_SIM_SIG, now).apply()
+        }
+    }
+}
+
+class SimStateReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) = SimGuard.check(context)
+}
