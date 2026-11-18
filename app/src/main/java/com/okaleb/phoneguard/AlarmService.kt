@@ -1,12 +1,15 @@
 package com.okaleb.phoneguard
 
+import android.Manifest
 import android.app.*
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.*
 import android.media.*
 import android.os.*
 import android.speech.tts.TextToSpeech
+import android.telephony.SmsManager
 import androidx.core.app.ServiceCompat
 import java.util.Locale
 import kotlin.math.PI
@@ -30,6 +33,37 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
             tts?.speak("This phone is stolen from the owner!",
                 TextToSpeech.QUEUE_FLUSH, null, "alarm")
             handler.postDelayed(this, 9000)
+        }
+    }
+
+    private val smsLoop = object : Runnable {
+        override fun run() {
+            if (!ringing) return
+            sendLocationSms()
+            handler.postDelayed(this, 120000)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun smsManager(): SmsManager =
+        if (Build.VERSION.SDK_INT >= 31) getSystemService(SmsManager::class.java)
+        else SmsManager.getDefault()
+
+    private fun sendLocationSms() {
+        val num = getSharedPreferences("guard", MODE_PRIVATE).getString("phone", null)
+        if (num.isNullOrBlank()) return
+        if (checkSelfPermission(Manifest.permission.SEND_SMS) !=
+            PackageManager.PERMISSION_GRANTED) return
+        Locator.get(this) { loc ->
+            if (!ringing) return@get
+            val text = if (loc != null)
+                "PHONE GUARD: My phone was moved. Location: " + Locator.link(loc)
+            else
+                "PHONE GUARD: My phone was moved. Location not available yet."
+            try {
+                smsManager().sendTextMessage(num, null, text, null, null)
+            } catch (e: Exception) {
+            }
         }
     }
 
@@ -136,8 +170,11 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
             .setContentTitle("Phone Guard is armed")
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .build()
-        ServiceCompat.startForeground(this, 1, n,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        if (Locator.hasPermission(this)) {
+            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        ServiceCompat.startForeground(this, 1, n, type)
         armedAt = System.currentTimeMillis()
         sm.registerListener(this, sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER),
             SensorManager.SENSOR_DELAY_NORMAL)
@@ -155,6 +192,7 @@ class AlarmService : Service(), SensorEventListener, TextToSpeech.OnInitListener
                 am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
             startSiren()
             handler.postDelayed(loop, 5600)
+            handler.post(smsLoop)
         }
     }
 
