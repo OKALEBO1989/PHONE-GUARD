@@ -8,7 +8,7 @@
 1. **Automatic Alarm Activation:** The alarm activates automatically when someone steals or tampers with the phone.
 2. **Loud Voice Alert:** The application announces:
 
-   "THIS PERSON IS A THIEF. OONO MUBBI!"
+   "THIS PHONE IS STOLEN FROM THE OWNER.PLEASE CALL.0778044126!"
 
 3. **Continuous Alarm:** The alarm continues until the authorized owner enters the correct security PIN.
 4. **Anti-Theft Protection:** Designed to discourage unauthorized handling and theft.
